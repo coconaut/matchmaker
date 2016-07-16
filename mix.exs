@@ -14,7 +14,10 @@ defmodule Matchmaker.Mixfile do
   #
   # Type "mix help compile.app" for more information
   def application do
-    [applications: [:logger]]
+    [
+      applications: [:logger],
+      mod: {Matchmaker, []}
+  ]
   end
 
   # Dependencies can be Hex packages:
@@ -27,6 +30,7 @@ defmodule Matchmaker.Mixfile do
   #
   # Type "mix help deps" for more examples and options
   defp deps do
-    []
+    [{:uuid, "~> 1.1.4"}
+    ]
   end
 end
