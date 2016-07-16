@@ -4,16 +4,16 @@ defmodule Matchmaker.Server do
 
 	# TODO: make umbrella app, throw in git separately, add as deps to real phoenix proj
 
-  # NOTE: channels use different channel_pid per topic,
-  # even when created from same socket
-  # this means we can monitor once through join, one channel per topic, etc.
+	# NOTE: channels use different channel_pid per topic,
+	# even when created from same socket
+	# this means we can monitor once through join, one channel per topic, etc.
 
-  # TODO: make poolable, ets, recovery? or crash sockets, either way
-  # actually -> Process trap exit may be the way to go, since we'll
-  # for the sockets to rejoin (consider for yowo as well instead of ets foldl)
-  # and, they could rejoin a diff matchmaker and it wouldn't matter
+	# TODO: make poolable, ets, recovery? or crash sockets, either way
+	# actually -> Process trap exit may be the way to go, since we'll
+	# for the sockets to rejoin (consider for yowo as well instead of ets foldl)
+	# and, they could rejoin a diff matchmaker and it wouldn't matter
 
-  # TODO: updates to functions, max subs, etc.
+	# TODO: updates to functions, max subs, etc.
     
 	@max_subscribers Application.get_env(:matchmaker, :max_subscribers)
 
@@ -92,11 +92,11 @@ defmodule Matchmaker.Server do
 		Catch exit signals and remove channel.
 	"""
 	def handle_info({:EXIT, pid, _reason}, state) do
-    case Map.fetch(state.channels, pid) do
-      {:ok, room_id} -> {:noreply, state |> drop_channel(pid) |> decrement_room(room_id)}
-      :error -> {:noreply, state}
+        case Map.fetch(state.channels, pid) do
+          {:ok, room_id} -> {:noreply, state |> drop_channel(pid) |> decrement_room(room_id)}
+          :error -> {:noreply, state}
+        end
     end
-  end
 
 	def handle_info(_msg, state) do
 		{:noreply, state}
