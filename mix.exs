@@ -17,7 +17,7 @@ defmodule Matchmaker.Mixfile do
     [
       applications: [:logger],
       mod: {Matchmaker, []}
-  ]
+    ]
   end
 
   # Dependencies can be Hex packages:
