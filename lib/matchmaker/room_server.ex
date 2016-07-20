@@ -2,7 +2,6 @@ defmodule Matchmaker.RoomServer do
   use GenServer
   require Logger
 
-  # need to pull module / room behaviour from config
   # need to allow module change
   # need to start room when gen_new_room
     # need to link room to room_server, unless we want a better strategy and truly supervise
@@ -101,10 +100,10 @@ defmodule Matchmaker.RoomServer do
   def handle_call({:join, pid, room_id}, _from, state) do
     Process.link(pid) # link so we trap exit -> consider monitoring, but remonitoring seems problematic...
     # TODO: track time?
-    # max_subs = state.max_subscribers
+    max_subs = state.max_subscribers
     res = 
       case Map.fetch(state.rooms, room_id) do
-        {:ok, {ct, _room_pid}} when ct < state.max_subscribers -> {:error, :too_crowded} # TODO: check this
+        {:ok, {ct, _room_pid}} when ct < max_subs -> {:error, :too_crowded} # TODO: check this
         {:ok, {ct, room_pid}} -> {:ok, room_pid}
         :error -> 
           {:ok, room_pid} = state.room_gen.start_link(room_id)
@@ -145,7 +144,7 @@ defmodule Matchmaker.RoomServer do
       |> filter_max_subs()
       |> Enum.map(fn {room_id, _info} -> room_id end)
     case rooms do 
-      [] -> gen_new_room()
+      [] -> gen_new_room_id()
       [h|_t] -> h
     end
   end
@@ -161,7 +160,7 @@ defmodule Matchmaker.RoomServer do
     state.rooms |> Enum.filter(fn {_room_id, {ct, _pid}} -> ct < state.max_subscribers end)
   end
 
-  defp gen_new_room() do
+  defp gen_new_room_id() do
     UUID.uuid4(:weak)
   end
 
