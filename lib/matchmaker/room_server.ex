@@ -106,7 +106,10 @@ defmodule Matchmaker.RoomServer do
       case Map.fetch(state.rooms, room_id) do
         {:ok, {ct, _room_pid}} when ct < state.max_subscribers -> {:error, :too_crowded} # TODO: check this
         {:ok, {ct, room_pid}} -> {:ok, room_pid}
-        :error -> state.room_gen.start_link(room_id)
+        :error -> 
+          {:ok, room_pid} = state.room_gen.start_link(room_id)
+          Process.link(room_pid)
+          {:ok, room_pid}
       end
     case res do
       {:ok, room_pid} -> 
