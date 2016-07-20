@@ -23,6 +23,7 @@ use Mix.Config
 
 
 config :matchmaker, :max_subscribers, 4
+config :matchmaker, :room_mod, nil
 
 
 # It is also possible to import configuration files, relative to this

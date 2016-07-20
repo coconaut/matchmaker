@@ -8,7 +8,7 @@ defmodule Matchmaker.Supervisor do
   def init(:ok) do
     # TODO: accept or read pool size from config
     children = [
-      worker(Matchmaker.Server, [[name: Matchmaker.Server]])
+      worker(Matchmaker.RoomServer, [[name: Matchmaker.RoomServer]])
     ]
 
     supervise(children, strategy: :one_for_one)

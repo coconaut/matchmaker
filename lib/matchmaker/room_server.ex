@@ -1,8 +1,18 @@
-defmodule Matchmaker.Server do
+defmodule Matchmaker.RoomServer do
   use GenServer
   require Logger
 
-  # TODO: make umbrella app, throw in git separately, add as deps to real phoenix proj
+  # need to pull module / room behaviour from config
+  # need to allow module change
+  # need to start room when gen_new_room
+    # need to link room to room_server, unless we want a better strategy and truly supervise
+  # need to close room when decrement_room reaches 0
+  # room takes care of links to channels
+  # move to ets (esp room pid lookup) if optimization is needed
+  # need periodic gc...
+
+  # ---
+
 
   # NOTE: channels use different channel_pid per topic,
   # even when created from same socket
@@ -16,6 +26,7 @@ defmodule Matchmaker.Server do
   # TODO: updates to functions, max subs, etc.
   
   @max_subscribers Application.get_env(:matchmaker, :max_subscribers)
+  @room_mod Application.get_env(:matchmaker, :room_mod)
 
   # --- client api ---
 
@@ -36,6 +47,10 @@ defmodule Matchmaker.Server do
     GenServer.call(server, {:join, pid, room_id})
   end
 
+  def get_rooom(server, room_id) do
+    GenServer.call(server, {:get_room, room_id})
+  end
+
   def change_max(server, max) do
     GenServer.call(server, {:change_max, max})
   end
@@ -53,9 +68,10 @@ defmodule Matchmaker.Server do
   def init(:ok) do
     Process.flag(:trap_exit, true)
     {:ok, %{
-      :channels => Map.new(), 
-      :rooms => Map.new(), 
-      :max_subscribers => @max_subscribers}
+      :channels => Map.new(), # channels map pid of channel to room_id
+      :rooms => Map.new(), # rooms map room_id to {ct, pid} # todo: make struct for time, etc.
+      :max_subscribers => @max_subscribers,
+      :room_mod => @room_mod}
     }
   end
 
@@ -69,19 +85,35 @@ defmodule Matchmaker.Server do
     # TODO: send args through matchmaking function?
     room_id = get_next_available_room(state)
     Logger.debug "Match to room #{room_id}"
-    {:reply, {:ok, room_id, state}}
+    {:reply, {:ok, room_id}, state}
+  end
+
+  def handle_call({:get_room, room_id}, _from, state) do
+    case Map.fetch(state.rooms, room_id) do
+      {:ok, info} -> {:reply, {:ok, info}, state}
+      :error -> {:reply, :error, state}
+    end
   end
 
   @doc """
     Joins a room.
   """
   def handle_call({:join, pid, room_id}, _from, state) do
-    Process.link(pid) # link so we trap exit
+    Process.link(pid) # link so we trap exit -> consider monitoring, but remonitoring seems problematic...
     # TODO: track time?
-    # TODO: check room_id again, make sure still < 4, otherwise {:error}, so client can re-match
-    
-    s = state |> put_channel(room_id, pid) |> increment_room(room_id)
-    {:reply, {:ok, pid}, s}
+    # max_subs = state.max_subscribers
+    res = 
+      case Map.fetch(state.rooms, room_id) do
+        {:ok, {ct, _room_pid}} when ct < state.max_subscribers -> {:error, :too_crowded} # TODO: check this
+        {:ok, {ct, room_pid}} -> {:ok, room_pid}
+        :error -> state.room_gen.start_link(room_id)
+      end
+    case res do
+      {:ok, room_pid} -> 
+        s = state |> put_channel(room_id, pid) |> increment_room(room_id, room_pid)
+        {:reply, {:ok, pid}, s}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:change_max, max}, _from, state) do
@@ -92,6 +124,7 @@ defmodule Matchmaker.Server do
     Catch exit signals and remove channel.
   """
   def handle_info({:EXIT, pid, _reason}, state) do
+    # any way to avoid trying to find room pids for no reason?
     case Map.fetch(state.channels, pid) do
       {:ok, room_id} -> {:noreply, state |> drop_channel(pid) |> decrement_room(room_id)}
       :error -> {:noreply, state}
@@ -107,7 +140,7 @@ defmodule Matchmaker.Server do
     rooms = 
       state
       |> filter_max_subs()
-      |> Enum.map(fn {room_id, _ct} -> room_id end)
+      |> Enum.map(fn {room_id, _info} -> room_id end)
     case rooms do 
       [] -> gen_new_room()
       [h|_t] -> h
@@ -122,7 +155,7 @@ defmodule Matchmaker.Server do
   end
 
   defp filter_max_subs(state) do
-    state.rooms |> Enum.filter(fn {_room_id, ct} -> ct < state.max_subscribers end)
+    state.rooms |> Enum.filter(fn {_room_id, {ct, _pid}} -> ct < state.max_subscribers end)
   end
 
   defp gen_new_room() do
@@ -137,19 +170,21 @@ defmodule Matchmaker.Server do
     %{state | channels: Map.delete(state.channels, pid)}
   end
 
-  defp increment_room(state, room_id) do
+  defp increment_room(state, room_id, room_pid) do
     count = 
       case Map.fetch(state.rooms, room_id) do
-        {:ok, ct} -> ct + 1
+        {:ok, {ct, ^room_pid}} -> ct +  1
         :error -> 1
       end
-    %{state | rooms: Map.put(state.rooms, room_id, count)}
+    %{state | rooms: Map.put(state.rooms, room_id, {count, room_pid})}
   end
 
   defp decrement_room(state, room_id) do
     case Map.fetch(state.rooms, room_id) do
-      {:ok, 1} -> %{state | rooms: Map.delete(state.rooms, room_id)} # don't maintain empty rooms
-      {:ok, ct} -> %{state | rooms: Map.put(state.rooms, room_id, ct - 1)}
+      {:ok, {1, pid}} -> 
+        state.room_mod.close(pid)
+        %{state | rooms: Map.delete(state.rooms, room_id)} # don't maintain empty rooms
+      {:ok, {ct, pid}} -> %{state | rooms: Map.put(state.rooms, room_id, {ct - 1, pid})}
       :error -> state
     end
   end
