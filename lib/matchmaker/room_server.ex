@@ -169,7 +169,7 @@ defmodule Matchmaker.RoomServer do
     cond do
       room_info.member_count > state.max_subscribers -> {:reply, {:error, :too_crowded}, state}
       true ->
-        case state.room_mod.handle_join(room_info.room_pid, pid) do
+        case state.room_mod.join(room_info.room_pid, pid) do
           {:ok, :joined, return_arg} ->
             s = state |> put_channel(pid, room_info.room_id) |> increment_room(room_info.room_id)
             {:reply, {:ok, room_info.room_pid, return_arg}, s}
