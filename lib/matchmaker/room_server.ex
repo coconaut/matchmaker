@@ -72,7 +72,7 @@ defmodule Matchmaker.RoomServer do
         {:ok, room_id} = gen_new_room_id()
         {:ok, room_pid} = state.room_mod.start_link(room_id)
         Process.link(room_pid)
-        {:reply, room_id, state |> put_room(room_id, room_pid)}
+        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid)}
     end
   end
 
