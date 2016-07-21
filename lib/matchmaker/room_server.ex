@@ -129,11 +129,15 @@ defmodule Matchmaker.RoomServer do
     Catch exit signals and remove channel.
   """
   def handle_info({:EXIT, pid, _reason}, state) do
-    # any way to avoid trying to find room pids for no reason?
-    # TODO: if room_id is found, get room, tell it that this pid has left
-    # it will be up to room to tell channel to broadcast?
     case Map.fetch(state.channels, pid) do
-      {:ok, room_id} -> {:noreply, state |> drop_channel(pid) |> decrement_room(room_id)}
+      {:ok, room_id} -> 
+        s = state |> drop_channel(pid) |> decrement_room(room_id)
+        :ok = 
+          case Map.fetch(s.rooms, room_id) do
+            {:ok, room_info} -> s.room_mod.leave(room_info.room_pid, pid)
+            :error -> :ok
+          end
+        {:noreply, s}
       :error -> {:noreply, state}
     end
   end
@@ -222,8 +226,8 @@ defmodule Matchmaker.RoomServer do
       {:ok, room_info} ->
         case room_info.member_count do
           1 ->  
-            %{state | rooms: Map.delete(state.rooms, room_id)} # don't maintain empty rooms    
             room_info.room_pid |> state.room_mod.close()
+            %{state | rooms: Map.delete(state.rooms, room_id)} # don't maintain empty rooms    
           ct ->
             room = RoomInfo.update_count(room_info, ct - 1)
             %{state | rooms: Map.put(state.rooms, room_id, room)}
