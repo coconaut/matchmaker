@@ -2,6 +2,10 @@ defmodule Matchmaker.RoomServer do
   use GenServer
   alias Matchmaker.RoomInfo
   require Logger
+
+  # TODO:
+  # - consider ets
+  # - gc for any orphaned rooms (e.g. ct = 0 but no one ever joined to decrement)
   
   @max_subscribers Application.get_env(:matchmaker, :max_subscribers)
   @room_mod Application.get_env(:matchmaker, :room_mod)
@@ -17,8 +21,12 @@ defmodule Matchmaker.RoomServer do
     GenServer.call(server, :match)
   end
 
-  def join(server, pid, room_id) do
-    GenServer.call(server, {:join, pid, room_id})
+  def join(server, pid, room_id, payload \\ []) do
+    GenServer.call(server, {:join, pid, room_id, payload})
+  end
+
+  def lock_room(server, room_id) do
+    GenServer.call(server, {:lock_room, room_id})
   end
 
   def get_rooom_info(server, room_id) do
@@ -46,7 +54,7 @@ defmodule Matchmaker.RoomServer do
   def init(:ok) do
     Process.flag(:trap_exit, true)
     {:ok, %{
-      :channels => Map.new(), # channels map pid of channel to room_id
+      :channels => Map.new(), # channels map pid of channel to room_id (may want to rename to be more generic)
       :rooms => Map.new(), # rooms map room_id to %RoomInfo{}
       :max_subscribers => @max_subscribers,
       :room_mod => @room_mod}
@@ -81,11 +89,11 @@ defmodule Matchmaker.RoomServer do
   @doc """
     Joins a room.
   """
-  def handle_call({:join, pid, room_id}, _from, state) do
+  def handle_call({:join, pid, room_id, payload}, _from, state) do
     Process.link(pid) # link so we trap exit -> consider monitoring, but remonitoring seems problematic...
     case Map.fetch(state.rooms, room_id) do
       :error -> {:reply, {:error, :bad_room}, state}
-      {:ok, room_info} -> do_join_room(state, pid, room_info)
+      {:ok, room_info} -> do_join_room(state, pid, room_info, payload)
     end
   end
 
@@ -102,6 +110,20 @@ defmodule Matchmaker.RoomServer do
   def handle_call({:change_room_mod, mod}, _from, state) do
     {:reply, :ok, Map.put(state, :room_mod, mod)}
   end
+
+  @doc """
+    Locks room from anyone further joining.
+  """
+  def handle_call({:lock_room, room_id}, _from, state) do
+    case state.rooms.fetch(room_id) do
+      :error -> {:reply, {:error, :bad_room}, state}
+      {:ok, room_info} ->
+        room = RoomInfo.lock_room(room_info)
+        s = %{state | rooms: Map.put(state.rooms, room_id, room)}
+        {:reply, :ok, s}
+    end
+  end
+
   
   @doc """
     Catch exit signals and remove channel.
@@ -109,7 +131,7 @@ defmodule Matchmaker.RoomServer do
   def handle_info({:EXIT, pid, _reason}, state) do
     # any way to avoid trying to find room pids for no reason?
     # TODO: if room_id is found, get room, tell it that this pid has left
-    # it will be up to room to tell channel to broadcast
+    # it will be up to room to tell channel to broadcast?
     case Map.fetch(state.channels, pid) do
       {:ok, room_id} -> {:noreply, state |> drop_channel(pid) |> decrement_room(room_id)}
       :error -> {:noreply, state}
@@ -128,8 +150,9 @@ defmodule Matchmaker.RoomServer do
   defp get_next_available_room(state) do
     # TODO: store in / retrieve from ets?
     rooms = 
-      state
-      |> filter_max_subs()
+      state.rooms
+      |> filter_locked()
+      |> filter_max_subs(state.max_subscribers)
       |> Enum.map(fn {room_id, _info} -> room_id end)
     case rooms do 
       [] -> :error
@@ -137,11 +160,14 @@ defmodule Matchmaker.RoomServer do
     end
   end
 
-  defp filter_max_subs(state) do
-    state.rooms 
-    |> Enum.filter(fn {_id, room_info} -> 
-      room_info.member_count < state.max_subscribers 
-    end)
+  defp filter_locked(rooms) do
+    rooms
+    |> Enum.filter(fn {_id, room_info} -> !room_info.locked? end)
+  end
+
+  defp filter_max_subs(rooms, max) do
+    rooms
+    |> Enum.filter(fn {_id, room_info} -> room_info.member_count < max end)
   end
 
   defp gen_new_room_id() do
@@ -165,11 +191,11 @@ defmodule Matchmaker.RoomServer do
     %{state | rooms: Map.put(state.rooms, room_id, room)}
   end
 
-  defp do_join_room(state, pid, room_info) do
+  defp do_join_room(state, pid, room_info, payload) do
     cond do
       room_info.member_count > state.max_subscribers -> {:reply, {:error, :too_crowded}, state}
       true ->
-        case state.room_mod.join(room_info.room_pid, pid) do
+        case state.room_mod.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
             s = state |> put_channel(pid, room_info.room_id) |> increment_room(room_info.room_id)
             {:reply, {:ok, room_info.room_pid, return_arg}, s}
@@ -181,7 +207,10 @@ defmodule Matchmaker.RoomServer do
   defp increment_room(state, room_id) do
     case Map.fetch(state.rooms, room_id) do
       {:ok, room_info} -> 
-        room = room_info |> RoomInfo.update_count(room_info.member_count + 1)
+        room = 
+          room_info 
+          |> RoomInfo.update_count(room_info.member_count + 1)
+          |> RoomInfo.update_last_joined()
         %{state | rooms: Map.put(state.rooms, room_id, room)}
       :error -> state
     end
