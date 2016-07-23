@@ -217,12 +217,7 @@ defmodule Matchmaker.RoomServer do
     %{state | rooms: Map.put(state.rooms, room_id, room), room_pids: Map.put(state.room_pids, room_pid, room_id)}
   end
 
-  defp put_room(state, room_info) do
-    %{state | rooms: Map.put(state.rooms, room_info.room_id, room_info)}
-  end
-
   defp do_join_room(state, pid, room_info, payload) do
-    # TODO: clean this up!!!
     Logger.debug "max: #{state.max_subscribers}"
     Logger.debug "member ct pre-join: #{room_info.member_count}"
     cond do
@@ -231,17 +226,8 @@ defmodule Matchmaker.RoomServer do
         case state.room_adapter.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
             case increment_room(state, room_info.room_id) do
-              :error -> {:reply, {:error, :lost_room}, state} # TODO: remove from room itself...
-              {:ok, nu_info} ->
-                nu_state = 
-                  state
-                  |> put_channel(pid, room_info.room_id)
-                  |> put_room(nu_info)
-                # lock if at capacity -> slight race here?
-                if nu_info.locked? do
-                  send(self(), {:lock_room, room_info.room_id})
-                end
-                {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
+              :error -> {:reply, {:error, :lost_room}, state} # TODO: destory room? but not here... may want to really error...
+              {:ok, nu_state} -> {:reply, {:ok, room_info.room_pid, return_arg}, put_channel(nu_state, pid, room_info.room_id)}
             end
           :error -> {:reply, {:error, :unable_to_join}, state}
         end
@@ -254,13 +240,8 @@ defmodule Matchmaker.RoomServer do
         nu_info = 
           room_info 
           |> RoomInfo.update_count(room_info.member_count + 1)
-          |> RoomInfo.update_last_joined()
-        nu_info = 
-          cond do 
-            nu_info.member_count == state.max_subscribers -> RoomInfo.lock_room(nu_info)
-            true -> nu_info
-          end
-        {:ok, nu_info}
+          |> RoomInfo.update_last_joined()        
+        {:ok, %{state | rooms: Map.put(state.rooms, room_id, nu_info)}}
       :error -> :error
     end
   end
