@@ -207,11 +207,11 @@ defmodule Matchmaker.RoomServer do
   defp do_join_room(state, pid, room_info, payload) do
     Logger.debug "max: #{state.max_subscribers}"
     Logger.debug "member ct: #{room_info.member_count}"
-
+    projected_ct = room_info.member_count + 1
     capacity = 
       cond do
-        room_info.member_count > state.max_subscribers -> :over
-        room_info.member_count < state.max_subscribers -> :under
+        projected_ct > state.max_subscribers -> :over
+        projected_ct < state.max_subscribers -> :under
         true -> :at_capacity
       end
     Logger.debug "capacity: #{capacity}"
