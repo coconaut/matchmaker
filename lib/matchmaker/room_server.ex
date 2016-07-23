@@ -321,8 +321,8 @@ defmodule Matchmaker.RoomServer do
   end
 
   defp do_lock_room(state, room_id) do
-    Logger.debug "Matchmaker locking room"
-    case state.rooms.fetch(room_id) do
+    Logger.debug "Matchmaker locking room: #{room_id}"
+    case Map.fetch(state.rooms, room_id) do
       {:ok, room_info} ->
         room = RoomInfo.lock_room(room_info)
         state.room_adapter.lock(room.room_pid)
