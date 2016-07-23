@@ -29,6 +29,9 @@ defmodule Matchmaker.RoomServer do
     GenServer.call(server, {:join, pid, room_id, payload})
   end
 
+  @doc """
+    Let the adapter decide if they want to lock room early.
+  """
   def lock_room(server, room_id) do
     GenServer.call(server, {:lock_room, room_id})
   end
@@ -124,8 +127,9 @@ defmodule Matchmaker.RoomServer do
       :error -> {:reply, {:error, :bad_room}, state}
       {:ok, room_info} ->
         room = RoomInfo.lock_room(room_info)
-        s = %{state | rooms: Map.put(state.rooms, room_id, room)}
-        {:reply, :ok, s}
+        state.room_adapter.lock()
+        nu_state = %{state | rooms: Map.put(state.rooms, room_id, room)}
+        {:reply, :ok, nu_state}
     end
   end
 
@@ -199,15 +203,25 @@ defmodule Matchmaker.RoomServer do
   end
 
   defp do_join_room(state, pid, room_info, payload) do
-    cond do
-      room_info.member_count > state.max_subscribers -> {:reply, {:error, :too_crowded}, state}
-      true ->
+    capacity = 
+      cond do
+        room_info.member_count > state.max_subscribers -> :over
+        room_info.member_count < state.max_subscribers -> :under
+        true -> :at_capacity
+      end
+    case capacity do
+      :over -> {:reply, {:error, :too_crowded}, state}
+      _ ->
         case state.room_adapter.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
             nu_state = 
               state 
               |> put_channel(pid, room_info.room_id) 
               |> increment_room(room_info.room_id)
+            # need to trigger lock, but not until after we've let this player finish joining
+            if capacity == :at_capacity do
+              lock_room(self(), room_info.room_id)
+            end
             {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
           :error -> {:reply, {:error, :unable_to_join}, state}
         end
