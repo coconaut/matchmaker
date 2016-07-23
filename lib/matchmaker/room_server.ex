@@ -222,7 +222,7 @@ defmodule Matchmaker.RoomServer do
               {:ok, nu_info} ->
                 # lock if at capacity -> slight race here?
                 if nu_info.locked? do
-                  state.room_adapter.lock_room(nu_info.room_pid)
+                  state.room_adapter.lock(nu_info.room_pid)
                 end
                 nu_state = 
                   state
