@@ -131,7 +131,7 @@ defmodule Matchmaker.RoomServer do
 
   
   @doc """
-    Catch exit signals and remove channel.
+    Catch exit signals and remove channel or room adapter.
   """
   def handle_info({:EXIT, pid, _reason}, state) do
     resp = 
