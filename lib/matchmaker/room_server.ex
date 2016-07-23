@@ -127,7 +127,7 @@ defmodule Matchmaker.RoomServer do
       :error -> {:reply, {:error, :bad_room}, state}
       {:ok, room_info} ->
         room = RoomInfo.lock_room(room_info)
-        state.room_adapter.lock()
+        state.room_adapter.lock(room.room_pid)
         nu_state = %{state | rooms: Map.put(state.rooms, room_id, room)}
         {:reply, :ok, nu_state}
     end
