@@ -81,7 +81,7 @@ defmodule Matchmaker.RoomServer do
         {:ok, room_id} = gen_new_room_id()
         {:ok, room_pid} = state.room_adapter.start_link(room_id, self())
         Process.link(room_pid)
-        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid)}
+        {:reply, {:ok, room_id}, state |> create_room(room_id, room_pid)}
     end
   end
 
@@ -195,7 +195,7 @@ defmodule Matchmaker.RoomServer do
     %{state | channels: Map.delete(state.channels, pid)}
   end
 
-  defp put_room(state, room_id, room_pid) do
+  defp create_room(state, room_id, room_pid) do
     room = %RoomInfo{
       :room_id => room_id,
       :room_pid => room_pid,
@@ -204,32 +204,32 @@ defmodule Matchmaker.RoomServer do
     %{state | rooms: Map.put(state.rooms, room_id, room), room_pids: Map.put(state.room_pids, room_pid, room_id)}
   end
 
+  defp put_room(state, room_info) do
+    %{state | rooms: Map.put(state.rooms, room_info.room_id, room_info)}
+  end
+
   defp do_join_room(state, pid, room_info, payload) do
+    # TODO: clean this up!!!
     Logger.debug "max: #{state.max_subscribers}"
-    Logger.debug "member ct: #{room_info.member_count}"
-    projected_ct = room_info.member_count + 1
-    capacity = 
-      cond do
-        projected_ct > state.max_subscribers -> :over
-        projected_ct < state.max_subscribers -> :under
-        true -> :at_capacity
-      end
-    Logger.debug "capacity: #{capacity}"
-    case capacity do
-      :over -> {:reply, {:error, :too_crowded}, state}
-      _ ->
+    Logger.debug "member ct pre-join: #{room_info.member_count}"
+    cond do
+      room_info.member_count >= state.max_subscribers -> {:reply, {:error, :too_crowded}, state}
+      true ->
         case state.room_adapter.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
-            nu_state = 
-              state 
-              |> put_channel(pid, room_info.room_id) 
-              |> increment_room(room_info.room_id)
-            # need to trigger lock, but not until after we've let this player finish joining
-            if capacity == :at_capacity do
-              Logger.debug "About to send lock msg to self"
-              lock_room(self(), room_info.room_id)
+            case increment_room(state, room_info.room_id) do
+              :error -> {:reply, {:error, :lost_room}, state} # TODO: remove from room itself...
+              {:ok, nu_info} ->
+                # lock if at capacity -> slight race here?
+                if nu_info.locked? do
+                  state.room_adapter.lock_room(nu_info.room_pid)
+                end
+                nu_state = 
+                  state
+                  |> put_channel(pid, room_info.room_id)
+                  |> put_room(nu_info)
+                {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
             end
-            {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
           :error -> {:reply, {:error, :unable_to_join}, state}
         end
     end
@@ -242,8 +242,13 @@ defmodule Matchmaker.RoomServer do
           room_info 
           |> RoomInfo.update_count(room_info.member_count + 1)
           |> RoomInfo.update_last_joined()
-        %{state | rooms: Map.put(state.rooms, room_id, nu_info)}
-      :error -> state
+        nu_info = 
+          cond do 
+            nu_info.member_count == state.max_subscribers -> RoomInfo.lock_room(nu_info)
+            true -> nu_info
+          end
+        {:ok, nu_info}
+      :error -> :error
     end
   end
 
