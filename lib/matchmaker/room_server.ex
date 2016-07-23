@@ -6,15 +6,17 @@ defmodule Matchmaker.RoomServer do
   # TODO:
   # - consider ets
   # - gc for any orphaned rooms (e.g. ct = 0 but no one ever joined to decrement)
+  # - naming -> change room behaviour to something Adapter?
+  # default adapter
+  # check configs on start and pass in, but use defaults if not present
   
-  @max_subscribers Application.get_env(:matchmaker, :max_subscribers)
-  @room_mod Application.get_env(:matchmaker, :room_mod)
+  
 
   # --- client api ---
 
-  def start_link(opts \\ []) do
+  def start_link(max_subscribers, room_adapter, opts \\ []) do
     Logger.info "Matchmaker server starting"
-    GenServer.start_link(__MODULE__, :ok, opts)
+    GenServer.start_link(__MODULE__, {:ok, max_subscribers, room_adapter}, opts)
   end
 
   def match(server) do # TODO: add args/ match criteria here??
@@ -37,8 +39,8 @@ defmodule Matchmaker.RoomServer do
     GenServer.call(server, {:change_max, max})
   end
 
-  def change_room_mod(server, mod) do
-    GenServer.call(server, {:change_room_mod, mod})
+  def change_room_adapter(server, mod) do
+    GenServer.call(server, {:change_room_adapter, mod})
   end
 
   # --- server callbacks ---
@@ -51,13 +53,13 @@ defmodule Matchmaker.RoomServer do
     tracking refs by matchmaking server, or potentially remonitoring
     dead processes.
   """
-  def init(:ok) do
+  def init({:ok, max_subscribers, room_adapter}) do
     Process.flag(:trap_exit, true)
     {:ok, %{
       :channels => Map.new(), # channels map pid of channel to room_id (may want to rename to be more generic)
       :rooms => Map.new(), # rooms map room_id to %RoomInfo{}
-      :max_subscribers => @max_subscribers,
-      :room_mod => @room_mod}
+      :max_subscribers => max_subscribers,
+      :room_adapter => room_adapter}
     }
   end
 
@@ -70,7 +72,7 @@ defmodule Matchmaker.RoomServer do
       {:ok, room_id} -> {:reply, {:ok, room_id}, state}
       :error -> 
         {:ok, room_id} = gen_new_room_id()
-        {:ok, room_pid} = state.room_mod.start_link(room_id)
+        {:ok, room_pid} = state.room_adapter.start_link(room_id)
         Process.link(room_pid)
         {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid)}
     end
@@ -107,8 +109,8 @@ defmodule Matchmaker.RoomServer do
   @doc """
     Changes callback room module.
   """
-  def handle_call({:change_room_mod, mod}, _from, state) do
-    {:reply, :ok, Map.put(state, :room_mod, mod)}
+  def handle_call({:change_room_adapter, mod}, _from, state) do
+    {:reply, :ok, Map.put(state, :room_adapter, mod)}
   end
 
   @doc """
@@ -134,7 +136,7 @@ defmodule Matchmaker.RoomServer do
         s = state |> drop_channel(pid) |> decrement_room(room_id)
         :ok = 
           case Map.fetch(s.rooms, room_id) do
-            {:ok, room_info} -> s.room_mod.leave(room_info.room_pid, pid)
+            {:ok, room_info} -> s.room_adapter.leave(room_info.room_pid, pid)
             :error -> :ok
           end
         {:noreply, s}
@@ -199,7 +201,7 @@ defmodule Matchmaker.RoomServer do
     cond do
       room_info.member_count > state.max_subscribers -> {:reply, {:error, :too_crowded}, state}
       true ->
-        case state.room_mod.join(room_info.room_pid, pid, payload) do
+        case state.room_adapter.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
             s = state |> put_channel(pid, room_info.room_id) |> increment_room(room_info.room_id)
             {:reply, {:ok, room_info.room_pid, return_arg}, s}
@@ -226,7 +228,7 @@ defmodule Matchmaker.RoomServer do
       {:ok, room_info} ->
         case room_info.member_count do
           1 ->  
-            room_info.room_pid |> state.room_mod.close()
+            room_info.room_pid |> state.room_adapter.close()
             %{state | rooms: Map.delete(state.rooms, room_id)} # don't maintain empty rooms    
           ct ->
             room = RoomInfo.update_count(room_info, ct - 1)
