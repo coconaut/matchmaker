@@ -58,6 +58,7 @@ defmodule Matchmaker.RoomServer do
     {:ok, %{
       :channels => Map.new(), # channels map pid of channel to room_id (may want to rename to be more generic)
       :rooms => Map.new(), # rooms map room_id to %RoomInfo{}
+      :room_refs => Map.new(), # maps room_ref to room_id
       :max_subscribers => max_subscribers,
       :room_adapter => room_adapter}
     }
@@ -73,8 +74,8 @@ defmodule Matchmaker.RoomServer do
       :error -> 
         {:ok, room_id} = gen_new_room_id()
         {:ok, room_pid} = state.room_adapter.start_link(room_id)
-        Process.link(room_pid)
-        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid)}
+        ref = Process.monitor(room_pid)
+        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid, ref)}
     end
   end
 
@@ -133,14 +134,29 @@ defmodule Matchmaker.RoomServer do
   def handle_info({:EXIT, pid, _reason}, state) do
     case Map.fetch(state.channels, pid) do
       {:ok, room_id} -> 
-        s = state |> drop_channel(pid) |> decrement_room(room_id)
+        nu_state = 
+          state 
+          |> drop_channel(pid) 
+          |> decrement_room(room_id)
         :ok = 
-          case Map.fetch(s.rooms, room_id) do
-            {:ok, room_info} -> s.room_adapter.leave(room_info.room_pid, pid)
+          case Map.fetch(nu_state.rooms, room_id) do
+            {:ok, room_info} -> nu_state.room_adapter.leave(room_info.room_pid, pid)
             :error -> :ok
           end
-        {:noreply, s}
+        {:noreply, nu_state}
       :error -> {:noreply, state}
+    end
+  end
+
+  @doc """
+    Receive message from monitoring room adapters.
+    Remove from rooms before the last channel tries to close.
+    Ideally avoid the Process.alive call in the channel exit.
+  """
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case Map.fetch(state.room_refs, ref) do
+      :error -> {:noreply, state}
+      {:ok, room_id} -> {:noreply, %{state | rooms: Map.delete(state.rooms, room_id)}}
     end
   end
 
@@ -188,13 +204,13 @@ defmodule Matchmaker.RoomServer do
     %{state | channels: Map.delete(state.channels, pid)}
   end
 
-  defp put_room(state, room_id, room_pid) do
+  defp put_room(state, room_id, room_pid, room_ref) do
     room = %RoomInfo{
       :room_id => room_id,
       :room_pid => room_pid,
       :created_at => DateTime.utc_now()
     }
-    %{state | rooms: Map.put(state.rooms, room_id, room)}
+    %{state | rooms: Map.put(state.rooms, room_id, room), room_refs: Map.put(state.room_refs, room_ref, room_id)}
   end
 
   defp do_join_room(state, pid, room_info, payload) do
@@ -203,8 +219,11 @@ defmodule Matchmaker.RoomServer do
       true ->
         case state.room_adapter.join(room_info.room_pid, pid, payload) do
           {:ok, :joined, return_arg} ->
-            s = state |> put_channel(pid, room_info.room_id) |> increment_room(room_info.room_id)
-            {:reply, {:ok, room_info.room_pid, return_arg}, s}
+            nu_state = 
+              state 
+              |> put_channel(pid, room_info.room_id) 
+              |> increment_room(room_info.room_id)
+            {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
           :error -> {:reply, {:error, :unable_to_join}, state}
         end
     end
@@ -213,11 +232,11 @@ defmodule Matchmaker.RoomServer do
   defp increment_room(state, room_id) do
     case Map.fetch(state.rooms, room_id) do
       {:ok, room_info} -> 
-        room = 
+        nu_info = 
           room_info 
           |> RoomInfo.update_count(room_info.member_count + 1)
           |> RoomInfo.update_last_joined()
-        %{state | rooms: Map.put(state.rooms, room_id, room)}
+        %{state | rooms: Map.put(state.rooms, room_id, nu_info)}
       :error -> state
     end
   end
