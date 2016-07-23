@@ -9,8 +9,10 @@ defmodule Matchmaker.RoomServer do
   # - naming -> change room behaviour to something Adapter?
   # default adapter
   # check configs on start and pass in, but use defaults if not present
+  # adapter for what can join? may need a pid, but also something to let them handle server close, instead of forcing kill
   
-  
+
+  @type t :: pid | atom
 
   # --- client api ---
 
@@ -58,7 +60,7 @@ defmodule Matchmaker.RoomServer do
     {:ok, %{
       :channels => Map.new(), # channels map pid of channel to room_id (may want to rename to be more generic)
       :rooms => Map.new(), # rooms map room_id to %RoomInfo{}
-      :room_refs => Map.new(), # maps room_ref to room_id
+      :room_pids => Map.new(), # reverse map -> room_pids to room_id
       :max_subscribers => max_subscribers,
       :room_adapter => room_adapter}
     }
@@ -73,9 +75,9 @@ defmodule Matchmaker.RoomServer do
       {:ok, room_id} -> {:reply, {:ok, room_id}, state}
       :error -> 
         {:ok, room_id} = gen_new_room_id()
-        {:ok, room_pid} = state.room_adapter.start_link(room_id)
-        ref = Process.monitor(room_pid)
-        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid, ref)}
+        {:ok, room_pid} = state.room_adapter.start_link(room_id, self())
+        Process.link(room_pid)
+        {:reply, {:ok, room_id}, state |> put_room(room_id, room_pid)}
     end
   end
 
@@ -132,31 +134,14 @@ defmodule Matchmaker.RoomServer do
     Catch exit signals and remove channel.
   """
   def handle_info({:EXIT, pid, _reason}, state) do
-    case Map.fetch(state.channels, pid) do
-      {:ok, room_id} -> 
-        nu_state = 
-          state 
-          |> drop_channel(pid) 
-          |> decrement_room(room_id)
-        :ok = 
-          case Map.fetch(nu_state.rooms, room_id) do
-            {:ok, room_info} -> nu_state.room_adapter.leave(room_info.room_pid, pid)
-            :error -> :ok
-          end
-        {:noreply, nu_state}
+    resp = 
+      case try_handle_channel_exit(pid, state) do
+        {:ok, nu_state} -> {:ok, nu_state}
+        :error -> try_handle_room_exit(pid, state)
+      end
+    case resp do
+      {:ok, nu_state} -> {:noreply, nu_state}
       :error -> {:noreply, state}
-    end
-  end
-
-  @doc """
-    Receive message from monitoring room adapters.
-    Remove from rooms before the last channel tries to close.
-    Ideally avoid the Process.alive call in the channel exit.
-  """
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    case Map.fetch(state.room_refs, ref) do
-      :error -> {:noreply, state}
-      {:ok, room_id} -> {:noreply, %{state | rooms: Map.delete(state.rooms, room_id)}}
     end
   end
 
@@ -204,13 +189,13 @@ defmodule Matchmaker.RoomServer do
     %{state | channels: Map.delete(state.channels, pid)}
   end
 
-  defp put_room(state, room_id, room_pid, room_ref) do
+  defp put_room(state, room_id, room_pid) do
     room = %RoomInfo{
       :room_id => room_id,
       :room_pid => room_pid,
       :created_at => DateTime.utc_now()
     }
-    %{state | rooms: Map.put(state.rooms, room_id, room), room_refs: Map.put(state.room_refs, room_ref, room_id)}
+    %{state | rooms: Map.put(state.rooms, room_id, room), room_pids: Map.put(state.room_pids, room_pid, room_id)}
   end
 
   defp do_join_room(state, pid, room_info, payload) do
@@ -253,6 +238,46 @@ defmodule Matchmaker.RoomServer do
             room = RoomInfo.update_count(room_info, ct - 1)
             %{state | rooms: Map.put(state.rooms, room_id, room)}
         end
+    end
+  end
+
+  # ---
+
+  defp try_handle_channel_exit(pid, state) do
+    # try to remove the channel if it crashed, and
+    # let the room_adapter know
+    case Map.fetch(state.channels, pid) do
+      {:ok, room_id} -> 
+        nu_state = 
+          state 
+          |> drop_channel(pid) 
+          |> decrement_room(room_id)
+        :ok = try_leave_room_adapter(nu_state, room_id, pid)
+        {:ok, nu_state}
+      :error -> :error
+    end
+  end
+
+  defp try_leave_room_adapter(state, room_id, pid) do
+    # grab the room and let the adapter know that a 
+    # channel has crashed
+    # this way, the room adapter never has to monitor anything
+    # only channels must monitor room_adapters, if they care
+    case Map.fetch(state.rooms, room_id) do
+      {:ok, room_info} -> state.room_adapter.leave(room_info.room_pid, pid)
+      :error -> :ok
+    end
+  end
+
+  defp try_handle_room_exit(pid, state) do
+    # the idea is to remove the room before the channels try to handle
+    # their monitors and decrement the room_info down to 0, which currently 
+    # calls the room adapter's close (on a then dead process)
+    case Map.pop(state.room_pids, pid) do
+      {:nil, _room_pids} -> :error
+      {room_id, nu_room_pids} -> {:ok, %{state | 
+        rooms: Map.delete(state.rooms, room_id), 
+        room_pids: nu_room_pids}}
     end
   end
 end
