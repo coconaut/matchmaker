@@ -124,14 +124,27 @@ defmodule Matchmaker.RoomServer do
     Locks room from anyone further joining.
   """
   def handle_call({:lock_room, room_id}, _from, state) do
-    Logger.debug "Matchmaker locking room"
-    case state.rooms.fetch(room_id) do
-      :error -> {:reply, {:error, :bad_room}, state}
-      {:ok, room_info} ->
-        room = RoomInfo.lock_room(room_info)
-        state.room_adapter.lock(room.room_pid)
-        nu_state = %{state | rooms: Map.put(state.rooms, room_id, room)}
-        {:reply, :ok, nu_state}
+    case do_lock_room(state, room_id) do
+      {:ok, nu_state} -> {:reply, :ok, nu_state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  @doc """
+    RoomServer must lock itself when reaching max, but after
+    it has replied to final joining channel and allowed it
+    to broadcast to other players.
+    TODO: see if this is really a race condition still, and if so, 
+    have the player state reports go through the room adapter instead of
+    replies from joins.
+    Alternately, force the final joining channel to broadcast...
+    Could do this from adapter in lock(room), rather than bcasting...
+    But would need player num or pid
+  """
+  def handle_info({:lock_room, room_id}, state) do
+    case do_lock_room(state, room_id) do
+      {:ok, nu_state} -> {:noreply, nu_state}
+      {:error, _reason} -> {:noreply, state}
     end
   end
 
@@ -220,14 +233,14 @@ defmodule Matchmaker.RoomServer do
             case increment_room(state, room_info.room_id) do
               :error -> {:reply, {:error, :lost_room}, state} # TODO: remove from room itself...
               {:ok, nu_info} ->
-                # lock if at capacity -> slight race here?
-                if nu_info.locked? do
-                  state.room_adapter.lock(nu_info.room_pid)
-                end
                 nu_state = 
                   state
                   |> put_channel(pid, room_info.room_id)
                   |> put_room(nu_info)
+                # lock if at capacity -> slight race here?
+                if nu_info.locked? do
+                  send(self(), {:lock_room, room_info.room_id})
+                end
                 {:reply, {:ok, room_info.room_pid, return_arg}, nu_state}
             end
           :error -> {:reply, {:error, :unable_to_join}, state}
@@ -304,6 +317,18 @@ defmodule Matchmaker.RoomServer do
       {room_id, nu_room_pids} -> {:ok, %{state | 
         rooms: Map.delete(state.rooms, room_id), 
         room_pids: nu_room_pids}}
+    end
+  end
+
+  defp do_lock_room(state, room_id) do
+    Logger.debug "Matchmaker locking room"
+    case state.rooms.fetch(room_id) do
+      {:ok, room_info} ->
+        room = RoomInfo.lock_room(room_info)
+        state.room_adapter.lock(room.room_pid)
+        nu_state = %{state | rooms: Map.put(state.rooms, room_id, room)}
+        {:ok, nu_state}
+      :error -> {:error, :bad_room}
     end
   end
 end
