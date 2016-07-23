@@ -123,6 +123,7 @@ defmodule Matchmaker.RoomServer do
     Locks room from anyone further joining.
   """
   def handle_call({:lock_room, room_id}, _from, state) do
+    Logger.debug "Matchmaker locking room"
     case state.rooms.fetch(room_id) do
       :error -> {:reply, {:error, :bad_room}, state}
       {:ok, room_info} ->
