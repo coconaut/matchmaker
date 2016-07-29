@@ -130,24 +130,6 @@ defmodule Matchmaker.RoomServer do
     end
   end
 
-  # @doc """
-  #   RoomServer must lock itself when reaching max, but after
-  #   it has replied to final joining channel and allowed it
-  #   to broadcast to other players.
-  #   TODO: see if this is really a race condition still, and if so, 
-  #   have the player state reports go through the room adapter instead of
-  #   replies from joins.
-  #   Alternately, force the final joining channel to broadcast...
-  #   Could do this from adapter in lock(room), rather than bcasting...
-  #   But would need player num or pid
-  # """
-  # def handle_info({:lock_room, room_id}, state) do
-  #   case do_lock_room(state, room_id) do
-  #     {:ok, nu_state} -> {:noreply, nu_state}
-  #     {:error, _reason} -> {:noreply, state}
-  #   end
-  # end
-
   
   @doc """
     Catch exit signals and remove channel or room adapter.
