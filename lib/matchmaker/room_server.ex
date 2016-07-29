@@ -306,7 +306,9 @@ defmodule Matchmaker.RoomServer do
     case Map.fetch(state.rooms, room_id) do
       {:ok, room_info} ->
         room = RoomInfo.lock_room(room_info)
-        state.room_adapter.lock(room.room_pid)
+        # state.room_adapter.lock(room.room_pid) # no longer locking within adapter.
+        # lock just means we won't consider the room anymore for new matches
+        # it is up to the adapter to keep track of ready clients and broadcase any sort of start
         nu_state = %{state | rooms: Map.put(state.rooms, room_id, room)}
         {:ok, nu_state}
       :error -> {:error, :bad_room}

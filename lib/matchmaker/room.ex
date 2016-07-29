@@ -3,5 +3,4 @@ defmodule Matchmaker.Room do
   @callback join(pid | atom, pid, any) :: {:ok, :joined, any} | :error
   @callback leave(pid, pid) :: :ok
   @callback close(pid) :: :ok
-  @callback lock(pid) :: :ok
 end
